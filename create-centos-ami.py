@@ -11,7 +11,7 @@ cleanup in the '%post' section to make the image suitable for an AMI.
 
 Once the install is done and the instance has shutdown, the console or EC2 API
 can be used to create an image from the instance. This has only been tested
-with CentOS 6 kickstarts using an amazon linux AMI for bootstrap.
+with CentOS kickstarts using an amazon linux HVM-EBS AMI for bootstrap.
 
 Requires boto. Credentials can be set with environment variables or any other
 boto method, including keyrings defined in ~/.boto.
