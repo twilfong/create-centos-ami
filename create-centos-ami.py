@@ -20,7 +20,7 @@ boto method, including keyrings defined in ~/.boto.
 __copyright__ = "Copyright 2014 Tim Wilfong"
 __license__ = "http://www.apache.org/licenses/LICENSE-2.0"
 
-import sys
+import sys, time
 import boto, boto.ec2.networkinterface, boto.vpc
 from argparse import ArgumentParser
 from urlparse import urlparse
@@ -142,3 +142,20 @@ res = conn.run_instances(id, key_name=args.key, instance_type=args.type,
 
 instance = res.instances[0]
 print "Launching instance %s" % instance.id
+
+# Poll and print instance state until stopped or timeout is reached
+state = None
+sys.stdout.write("Instance state:")
+for i in range(args.timeout * 10):
+    pstate = state
+    state = conn.get_only_instances(instance.id)[0].state
+    if pstate != state: sys.stdout.write('\n    %s ' % state)
+    sys.stdout.flush()
+    if state == 'stopped':
+        # Eventualy create the image from the stopped instance here?
+        print
+        break
+    else:
+        time.sleep(6)
+        sys.stdout.write('.')
+
