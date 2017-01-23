@@ -50,6 +50,11 @@ KICKSTART_URL = ('https://raw.githubusercontent.com/twilfong'
                  '/create-centos-ami/master/centos6-cloud.ks')
 
 
+class Error(Exception):
+    """Exceptions that should just print a message and exit"""
+    pass
+
+
 def create_parser(args=None):
     """Return ArgumentParser for list of args or command line (if none.)"""
     parser = ArgumentParser(description='CentOS AMI from-kickstart creator')
@@ -97,13 +102,14 @@ def launch_instance(args):
 
     # Choose first image ID that matches the given AMI name pattern
     try: id = conn.get_all_images(filters={'name': args.bootami})[0].id
-    except IndexError: sys.exit('ERROR: No matching AMIs found!')
+    except IndexError: raise Error('ERROR: No matching AMIs found!')
 
     # Connect to the given SubnetID or get a list of subnets in this region
     if args.novpc:
         subnets = None
     else:
-        subnets = vpc.connect_to_region(args.region).get_all_subnets(args.subnetid)
+        c = vpc.connect_to_region(args.region)
+        subnets = c.get_all_subnets(args.subnetid)
 
     # Use a VPC if we can, unless told not to. Use first subnet in list.
     if subnets:
@@ -137,25 +143,32 @@ def launch_instance(args):
     return res.instances[0]
 
 
+def wait_for_shutdown(instance, timeout, output=sys.stdout):
+    """Print instance state until it is stopped. Raise Error on timeout."""
+    state = None
+    output.write("Instance state:")
+    end = time.time() + 60 * timeout
+    while time.time() < end:
+        pstate = state
+        state = instance.update()
+        if pstate != state: output.write('\n    %s ' % state)
+        output.flush()
+        if state == 'stopped':
+            output.write('\n')
+            return
+        else:
+            time.sleep(5)
+            output.write('.')
+    output.write('\n')
+    raise Error('Timeout after %s minutes.' % timeout)
+
+
 if __name__ == "__main__":
     args = create_parser()
     userdata = create_userdata(args.mirrorurl, args.ksurl)
-    instance = launch_instance(args)
-
-    print "Launching instance %s" % instance.id
-
-    # Poll and print instance state until stopped or timeout is reached
-    state = None
-    sys.stdout.write("Instance state:")
-    for i in range(args.timeout * 10):
-        pstate = state
-        state = instance.update()
-        if pstate != state: sys.stdout.write('\n    %s ' % state)
-        sys.stdout.flush()
-        if state == 'stopped':
-            # Eventualy create the image from the stopped instance here?
-            print
-            break
-        else:
-            time.sleep(6)
-            sys.stdout.write('.')
+    try:
+        instance = launch_instance(args)
+        print "Launching instance %s" % instance.id
+        wait_for_shutdown(instance, args.timeout)
+    except Error, e:
+        sys.exit(e)
