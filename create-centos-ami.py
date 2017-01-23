@@ -22,6 +22,7 @@ __license__ = "http://www.apache.org/licenses/LICENSE-2.0"
 
 import sys, time
 from argparse import ArgumentParser
+
 from boto.ec2 import blockdevicemapping, connect_to_region, networkinterface
 from boto import vpc
 
@@ -44,101 +45,117 @@ EOF
 reboot
 '''
 
-# Parse command line arguments
-parser = ArgumentParser(description='CentOS AMI from-kickstart creator')
-parser.add_argument('-r', '--region', type=str, default='us-west-2',
-                    help='AWS region')
-parser.add_argument('-b', '--bootami', type=str,
-                    default='amzn-ami-minimal-hvm-20*x86_64-ebs',
-                    help='Name of bootstrap AMI')
-parser.add_argument('-k', '--key', type=str, default=None,
-                    help='Name of keypair to use')
-parser.add_argument('-s', '--subnetid', type=str, default=None,
-                    help='SubnetID in VPC. Default is to pick first one.')
-parser.add_argument('-t', '--type', type=str, default='t2.medium',
-                    help='Instance type')
-parser.add_argument('-d', '--disksize', type=int, default=None,
-                    help='Disk size in GB')
-parser.add_argument('-g', '--secgroup', type=str, default='default',
-                    help='Name of security group')
-parser.add_argument('-m', '--mirrorurl', type=str,
-                    default='http://mirror.san.fastserv.com/pub/linux/centos/6/os/x86_64/',
-                    help='URL for centOS mirror. Must contain images/ directory')
-parser.add_argument('-u', '--ksurl', type=str,
-                    default='https://raw.githubusercontent.com/twilfong/create-centos-ami/master/centos6-cloud.ks',
-                    help='URL for kickstart config')
-parser.add_argument('--novpc', action='store_true',
-                    default=False, help='Do not use VPC even if available.')
-parser.add_argument('--timeout', type=int, default=10,
-                    help='Maximum number of minutes to wait for shutdown.')
-args = parser.parse_args()
+MIRROR_URL = 'http://mirror.san.fastserv.com/pub/linux/centos/6/os/x86_64/'
+KICKSTART_URL = ('https://raw.githubusercontent.com/twilfong'
+                 '/create-centos-ami/master/centos6-cloud.ks')
 
-userdata = ('#!/bin/sh\n' +
-            '# Image and Kickstart URLs\n' +
-            'vmlinuz_url=' + args.mirrorurl + 'images/pxeboot/vmlinuz\n' +
-            'initrd_url=' + args.mirrorurl + 'images/pxeboot/initrd.img\n' +
-            'ks_url=' + args.ksurl + '\n' +
-            BOOTSTRAP_SCRIPT)
 
-# Connect to EC2 endpoint for region
-conn = connect_to_region(args.region)
+def create_parser(args=None):
+    """Return ArgumentParser for list of args or command line (if none.)"""
+    parser = ArgumentParser(description='CentOS AMI from-kickstart creator')
+    parser.add_argument('-r', '--region', type=str, default='us-west-2',
+                        help='AWS region')
+    parser.add_argument('-b', '--bootami', type=str,
+                        default='amzn-ami-minimal-hvm-20*x86_64-ebs',
+                        help='Name or pattern of bootstrap AMI')
+    parser.add_argument('-k', '--key', type=str, default=None,
+                        help='Name of keypair to use')
+    parser.add_argument('-s', '--subnetid', type=str, default=None,
+                        help='SubnetID in VPC. Default is to pick first one.')
+    parser.add_argument('-t', '--type', type=str, default='t2.medium',
+                        help='Instance type')
+    parser.add_argument('-d', '--disksize', type=int, default=None,
+                        help='Disk size in GB')
+    parser.add_argument('-g', '--secgroup', type=str, default='default',
+                        help='Name of security group')
+    parser.add_argument('-m', '--mirrorurl', type=str, default=MIRROR_URL,
+                        help='CentOS mirror URL containing images/ dir')
+    parser.add_argument('-u', '--ksurl', type=str, default=KICKSTART_URL,
+                        help='URL for kickstart config')
+    parser.add_argument('--novpc', action='store_true', default=False,
+                        help='Do not use VPC even if available.')
+    parser.add_argument('--timeout', type=int, default=10,
+                        help='Maximum number of minutes to wait for shutdown.')
+    return parser.parse_args()
 
-# Choose first AMI ID that matches the given bootami name pattern
-try: id = conn.get_all_images(filters={'name': args.bootami})[0].id
-except IndexError: sys.exit('ERROR: No matching AMIs found!')
 
-# Connect to the given SubnetID or get a list of subnets in this region
-if args.novpc:
-    subnets = None
-else:
-    subnets = vpc.connect_to_region(args.region).get_all_subnets(args.subnetid)
+def create_userdata(mirrorurl, ksurl, bootstrap=BOOTSTRAP_SCRIPT):
+    """Create userdata from mirror and kickstart urls and bootstrap script."""
+    header = ['#!/bin/sh',
+              '# Image and Kickstart URLs',
+              'vmlinuz_url=' + mirrorurl + 'images/pxeboot/vmlinuz',
+              'initrd_url=' + mirrorurl + 'images/pxeboot/initrd.img',
+              'ks_url=' + ksurl]
+    return '\n'.join(header) + bootstrap
 
-# Use a VPC if we can, unless told not to. Use first subnet in list.
-if subnets:
-    grpfilt = {'group-name': args.secgroup, 'vpc_id': subnets[0].vpc_id}
-    subnetid = subnets[0].id
-    # Find the security group id from the name
-    group = conn.get_all_security_groups(filters=grpfilt)[0].id
-    # associate the instance with a VPC and give it a puclic IP address
-    interface = networkinterface.NetworkInterfaceSpecification(
-            subnet_id=subnetid, groups=[group],
-            associate_public_ip_address=True)
-    interfaces = networkinterface.NetworkInterfaceCollection(interface)
-    groups = None
-else:
-    interfaces = None
-    groups = [args.secgroup]
 
-# Set disk mapping if needed
-if args.disksize:
-    dev_xvda = blockdevicemapping.BlockDeviceType(delete_on_termination=True)
-    dev_xvda.size = args.disksize
-    device_map = blockdevicemapping.BlockDeviceMapping()
-    device_map['/dev/xvda'] = dev_xvda
-else:
-    device_map = None
+def launch_instance(args):
+    """Connect to AWS and launch instance using args from create_parser"""
 
-# launch instance
-res = conn.run_instances(id, key_name=args.key, instance_type=args.type,
-        network_interfaces=interfaces, user_data=userdata,
-        security_groups=groups, block_device_map=device_map)
+    # Connect to EC2 endpoint for region
+    conn = connect_to_region(args.region)
 
-instance = res.instances[0]
-print "Launching instance %s" % instance.id
+    # Choose first image ID that matches the given AMI name pattern
+    try: id = conn.get_all_images(filters={'name': args.bootami})[0].id
+    except IndexError: sys.exit('ERROR: No matching AMIs found!')
 
-# Poll and print instance state until stopped or timeout is reached
-state = None
-sys.stdout.write("Instance state:")
-for i in range(args.timeout * 10):
-    pstate = state
-    state = conn.get_only_instances(instance.id)[0].state
-    if pstate != state: sys.stdout.write('\n    %s ' % state)
-    sys.stdout.flush()
-    if state == 'stopped':
-        # Eventualy create the image from the stopped instance here?
-        print
-        break
+    # Connect to the given SubnetID or get a list of subnets in this region
+    if args.novpc:
+        subnets = None
     else:
-        time.sleep(6)
-        sys.stdout.write('.')
+        subnets = vpc.connect_to_region(args.region).get_all_subnets(args.subnetid)
 
+    # Use a VPC if we can, unless told not to. Use first subnet in list.
+    if subnets:
+        grpfilt = {'group-name': args.secgroup, 'vpc_id': subnets[0].vpc_id}
+        subnetid = subnets[0].id
+        # Find the security group id from the name
+        group = conn.get_all_security_groups(filters=grpfilt)[0].id
+        # associate the instance with a VPC and give it a puclic IP address
+        interface = networkinterface.NetworkInterfaceSpecification(
+                subnet_id=subnetid, groups=[group],
+                associate_public_ip_address=True)
+        interfaces = networkinterface.NetworkInterfaceCollection(interface)
+        groups = None
+    else:
+        interfaces = None
+        groups = [args.secgroup]
+
+    # Set disk mapping if needed
+    if args.disksize:
+        dev_xvda = blockdevicemapping.BlockDeviceType(delete_on_termination=True)
+        dev_xvda.size = args.disksize
+        device_map = blockdevicemapping.BlockDeviceMapping()
+        device_map['/dev/xvda'] = dev_xvda
+    else:
+        device_map = None
+
+    # launch instance
+    res = conn.run_instances(id, key_name=args.key, instance_type=args.type,
+            network_interfaces=interfaces, user_data=userdata,
+            security_groups=groups, block_device_map=device_map)
+    return res.instances[0]
+
+
+if __name__ == "__main__":
+    args = create_parser()
+    userdata = create_userdata(args.mirrorurl, args.ksurl)
+    instance = launch_instance(args)
+
+    print "Launching instance %s" % instance.id
+
+    # Poll and print instance state until stopped or timeout is reached
+    state = None
+    sys.stdout.write("Instance state:")
+    for i in range(args.timeout * 10):
+        pstate = state
+        state = instance.update()
+        if pstate != state: sys.stdout.write('\n    %s ' % state)
+        sys.stdout.flush()
+        if state == 'stopped':
+            # Eventualy create the image from the stopped instance here?
+            print
+            break
+        else:
+            time.sleep(6)
+            sys.stdout.write('.')
