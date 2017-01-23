@@ -21,13 +21,9 @@ __copyright__ = "Copyright 2014 Tim Wilfong"
 __license__ = "http://www.apache.org/licenses/LICENSE-2.0"
 
 import sys, time
-import boto, boto.ec2.networkinterface, boto.vpc
 from argparse import ArgumentParser
-from urlparse import urlparse
-from boto.ec2 import connect_to_region
-from boto.ec2 import blockdevicemapping
-from boto.ec2.connection import EC2Connection
-from boto.regioninfo import RegionInfo
+from boto.ec2 import blockdevicemapping, connect_to_region, networkinterface
+from boto import vpc
 
 BOOTSTRAP_SCRIPT = '''
 mkdir -p /boot/
@@ -71,8 +67,6 @@ parser.add_argument('-m', '--mirrorurl', type=str,
 parser.add_argument('-u', '--ksurl', type=str,
                     default='https://raw.githubusercontent.com/twilfong/create-centos-ami/master/centos6-cloud.ks',
                     help='URL for kickstart config')
-parser.add_argument('-e', '--endpoint', type=str, default=None,
-                    help='endpoint URL (if not AWS)')
 parser.add_argument('--novpc', action='store_true',
                     default=False, help='Do not use VPC even if available.')
 parser.add_argument('--timeout', type=int, default=10,
@@ -86,15 +80,8 @@ userdata = ('#!/bin/sh\n' +
             'ks_url=' + args.ksurl + '\n' +
             BOOTSTRAP_SCRIPT)
 
-# parse endpoint url if given
-if args.endpoint: url = urlparse(args.endpoint)
-else: url = None
-
-# Connect to EC2 API endpoint for region
-if url: conn = EC2Connection(
-            region=RegionInfo(name=args.region, endpoint=url.hostname),
-            path=url.path, port=url.port, is_secure=(url.scheme == 'https'))
-else: conn = connect_to_region(args.region)
+# Connect to EC2 endpoint for region
+conn = connect_to_region(args.region)
 
 # Choose first AMI ID that matches the given bootami name pattern
 try: id = conn.get_all_images(filters={'name': args.bootami})[0].id
@@ -104,11 +91,7 @@ except IndexError: sys.exit('ERROR: No matching AMIs found!')
 if args.novpc:
     subnets = None
 else:
-    if url: c = boto.connect_vpc(
-                region=RegionInfo(name=args.region, endpoint=url.hostname),
-                path=url.path, port=url.port, is_secure=(url.scheme == 'https'))
-    else: c = boto.vpc.connect_to_region(args.region)
-    subnets = c.get_all_subnets(args.subnetid)
+    subnets = vpc.connect_to_region(args.region).get_all_subnets(args.subnetid)
 
 # Use a VPC if we can, unless told not to. Use first subnet in list.
 if subnets:
@@ -117,10 +100,10 @@ if subnets:
     # Find the security group id from the name
     group = conn.get_all_security_groups(filters=grpfilt)[0].id
     # associate the instance with a VPC and give it a puclic IP address
-    interface = boto.ec2.networkinterface.NetworkInterfaceSpecification(
+    interface = networkinterface.NetworkInterfaceSpecification(
             subnet_id=subnetid, groups=[group],
             associate_public_ip_address=True)
-    interfaces = boto.ec2.networkinterface.NetworkInterfaceCollection(interface)
+    interfaces = networkinterface.NetworkInterfaceCollection(interface)
     groups = None
 else:
     interfaces = None
