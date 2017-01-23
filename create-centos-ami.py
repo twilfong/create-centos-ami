@@ -26,6 +26,7 @@ from argparse import ArgumentParser
 from boto.ec2 import blockdevicemapping, connect_to_region, networkinterface
 from boto import vpc
 
+
 BOOTSTRAP_SCRIPT = '''
 mkdir -p /boot/
 curl $vmlinuz_url > /boot/kickstart-vmlinuz
@@ -73,6 +74,8 @@ def create_parser(args=None):
                         help='Disk size in GB')
     parser.add_argument('-g', '--secgroup', type=str, default='default',
                         help='Name of security group')
+    parser.add_argument('-n', '--name', type=str, default=None,
+                        help='Name for the created AMI')
     parser.add_argument('-m', '--mirrorurl', type=str, default=MIRROR_URL,
                         help='CentOS mirror URL containing images/ dir')
     parser.add_argument('-u', '--ksurl', type=str, default=KICKSTART_URL,
@@ -180,3 +183,16 @@ if __name__ == "__main__":
             print "Terminating instance %s." % instance.id
             instance.terminate()
         sys.exit('Exiting')
+
+    # Instance is stopped. Create AMI.
+    # Default name is the base filename from the kickstart URL
+    name = args.name or args.ksurl.split('/')[-1].split('.')[0]
+    id = instance.create_image(name)
+    print "Creating AMI %s with name %s from instance %s" % (name,
+                                                             id, instance.id)
+
+    # Need to terminate instance once AMI is created
+    # Should go through another polling loop. But for now, wait then kill.
+    time.sleep(50)
+    print "Terminating instance %s." % instance.id
+    instance.terminate()
