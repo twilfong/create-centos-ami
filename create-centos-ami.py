@@ -160,15 +160,23 @@ def wait_for_shutdown(instance, timeout, output=sys.stdout):
             time.sleep(5)
             output.write('.')
     output.write('\n')
-    raise Error('Timeout after %s minutes.' % timeout)
+    raise Error('Instance has not shutdown after %s minutes.' % timeout)
 
 
 if __name__ == "__main__":
     args = create_parser()
     userdata = create_userdata(args.mirrorurl, args.ksurl)
+
     try:
         instance = launch_instance(args)
         print "Launching instance %s" % instance.id
-        wait_for_shutdown(instance, args.timeout)
     except Error, e:
         sys.exit(e)
+
+    try:
+        wait_for_shutdown(instance, args.timeout)
+    except Error, e:
+        if raw_input('%s Terminate it? (y/N) ' % e).lower() in ['y', 'yes']:
+            print "Terminating instance %s." % instance.id
+            instance.terminate()
+        sys.exit('Exiting')
