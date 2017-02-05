@@ -97,8 +97,11 @@ def create_userdata(mirrorurl, ksurl, bootstrap=BOOTSTRAP_SCRIPT):
     return '\n'.join(header) + bootstrap
 
 
-def launch_instance(args):
+def launch_instance(args, userdata=None):
     """Connect to AWS and launch instance using args from create_parser"""
+
+    # Make userdata unless given
+    userdata = userdata or create_userdata(args.mirrorurl, args.ksurl)
 
     # Connect to EC2 endpoint for region
     conn = connect_to_region(args.region)
@@ -188,7 +191,6 @@ def wait_for_image(image, timeout, output=sys.stdout):
 
 if __name__ == "__main__":
     args = create_parser()
-    userdata = create_userdata(args.mirrorurl, args.ksurl)
 
     try:
         instance = launch_instance(args)
