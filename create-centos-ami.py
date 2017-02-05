@@ -166,6 +166,26 @@ def wait_for_shutdown(instance, timeout, output=sys.stdout):
     raise Error('Instance has not shutdown after %s minutes.' % timeout)
 
 
+def wait_for_image(image, timeout, output=sys.stdout):
+    """Print image state until it is available. Raise Error on timeout."""
+    state = None
+    output.write("Image state:")
+    end = time.time() + 60 * timeout
+    while time.time() < end:
+        pstate = state
+        state = image.update()
+        if pstate != state: output.write('\n    %s ' % state)
+        output.flush()
+        if state == 'available':
+            output.write('\n')
+            return
+        else:
+            time.sleep(5)
+            output.write('.')
+    output.write('\n')
+    raise Error('Image is still not available after %s minutes.' % timeout)
+
+
 if __name__ == "__main__":
     args = create_parser()
     userdata = create_userdata(args.mirrorurl, args.ksurl)
@@ -176,6 +196,7 @@ if __name__ == "__main__":
     except Error, e:
         sys.exit(e)
 
+    # Wait for kickstart install followed by instance shutdown
     try:
         wait_for_shutdown(instance, args.timeout)
     except Error, e:
@@ -185,14 +206,19 @@ if __name__ == "__main__":
         sys.exit('Exiting')
 
     # Instance is stopped. Create AMI.
-    # Default name is the base filename from the kickstart URL
-    name = args.name or args.ksurl.split('/')[-1].split('.')[0]
+    # Default name is the base filename from the kickstart URL plus date
+    name = args.name or (args.ksurl.split('/')[-1].split('.')[0] +
+                         '-' + time.strftime('%y%m%d'))
     id = instance.create_image(name)
-    print "Creating AMI %s with name %s from instance %s" % (name,
-                                                             id, instance.id)
+    print "Creating AMI %s with name %s from instance %s" % (id, name,
+                                                             instance.id)
 
-    # Need to terminate instance once AMI is created
-    # Should go through another polling loop. But for now, wait then kill.
-    time.sleep(50)
+    # Wait for AMI creation to finish, then terminate instance
+    try:
+        image = instance.connection.get_image(id)
+        wait_for_image(image, args.timeout)
+    except Error, e:
+        if raw_input('%s Keep instance? (y/N) ' % e).lower() in ['y', 'yes']:
+            sys.exit('Exiting')
     print "Terminating instance %s." % instance.id
     instance.terminate()
